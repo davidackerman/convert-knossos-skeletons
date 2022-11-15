@@ -1,0 +1,12 @@
+{
+    "python.defaultInterpreterPath": "/groups/scicompsoft/home/ackermand/miniconda3/envs/convert-knosssos-skeletons/bin/python",
+    "python.formatting.blackPath": "/groups/scicompsoft/home/ackermand/miniconda3/envs/convert-knossos-skeletons/bin/black",
+    "python.formatting.provider": "black",
+    "[python]": {
+        "editor.defaultFormatter": null,
+        "editor.formatOnPaste": false,
+        "editor.formatOnSaveMode": "file",
+    },
+    "python.linting.enabled": false,
+    "python.analysis.typeCheckingMode": "off"
+}
