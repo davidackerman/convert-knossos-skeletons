@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from functools import cached_property
 from scipy.interpolate import splprep, splev
 import networkx as nx
@@ -5,6 +6,7 @@ from scipy.optimize import fmin
 from typing import List
 from scipy.spatial import distance_matrix
 import numpy as np
+from fitters import *
 
 
 def add_to_dict(key_value_dict, key, value):
@@ -15,12 +17,16 @@ def add_to_dict(key_value_dict, key, value):
 
 
 class Filaments:
-    def __init__(self, bin_size):
+    def __init__(self, bin_size, splint_fraction=0.01):
+        self.splint_fraction = splint_fraction
+        self.num_points = 1 / splint_fraction + 1
         self.bin_size = bin_size
         self.filament_list: List[Filament] = list()
 
     def add_filament(self, id, node_dic, edge_list):
-        self.filament_list.append(Filament(id, node_dic, edge_list, self.bin_size))
+        self.filament_list.append(
+            Filament(id, node_dic, edge_list, self.bin_size, self.splint_fraction)
+        )
 
     def combine_filaments_info(self, indices="all"):
         self.bin_to_cos_theta_dict = {}
@@ -93,55 +99,38 @@ class Filaments:
         return dic
 
     def calculate_bundles(
-        self, cutoff_distance=20, cutoff_fraction=0.25, cutoff_angle=45
+        self, cutoff_distance=20, cutoff_angle=45, cutoff_fraction=0.25
     ):
         cutoff_cos_theta = np.abs(np.cos(np.pi * cutoff_angle / 180))
         self.are_bundled = np.zeros((len(self.filament_list), len(self.filament_list)))
 
         for i in range(len(self.filament_list)):
-            # coords_filament_i = filament_i.coords
             for j in range(i + 1, len(self.filament_list)):
-                # coords_filament_j = filament_j.coords
-                # dist = distance_matrix(coords_filament_i, coords_filament_j)
-                # [(i, j)]
-                # # dist is len(coords_i) rows by len(coords_j) columns
                 (
                     min_distance_per_point_j,
                     abs_cos_theta_per_point_j,
                 ) = self.point_to_point_info[(i, j)]
+
                 (
                     min_distance_per_point_i,
                     abs_cos_theta_per_point_i,
                 ) = self.point_to_point_info[(j, i)]
 
-                # point_j_touching_point_i_count = 0
-                # cos_theta = 0
-                # for point_j, point_i in enumerate(closest_point_i_per_point_j):
-                #     if min_distance_point_i_per_point_j[point_j] <= cutoff_distance:
-                #         cos_theta = np.dot(
-                #             normalized_tangents_i[point_i, :],
-                #             normalized_tangents_j[point_j, :],
-                #         )
-                #         if np.abs(cos_theta) >= np.arccos(np.pi * cutoff_angle / 180):
-                #             point_j_touching_point_i_count += 1
-
-                # point_i_touching_point_j_count = 0
-                # for point_i, point_j in enumerate(closest_point_j_per_point_i):
-                #     if min_distance_point_j_per_point_i[point_i] <= cutoff_distance:
-                #         cos_theta = np.dot(
-                #             normalized_tangents_i[point_i, :],
-                #             normalized_tangents_j[point_j, :],
-                #         )
-                #         if np.abs(cos_theta) >= np.cos(np.pi * cutoff_angle / 180):
-                #             point_i_touching_point_j_count += 1
-
-                fraction_i = np.mean(
-                    (min_distance_per_point_i <= cutoff_distance)
-                    & (abs_cos_theta_per_point_i >= cutoff_cos_theta)
+                # count_nonzero/count seems faster than np.mean
+                fraction_i = (
+                    np.count_nonzero(
+                        (min_distance_per_point_i <= cutoff_distance)
+                        & (abs_cos_theta_per_point_i >= cutoff_cos_theta)
+                    )
+                    / self.num_points
                 )
-                fraction_j = np.mean(
-                    (min_distance_per_point_j <= cutoff_distance)
-                    & (abs_cos_theta_per_point_j >= cutoff_cos_theta)
+
+                fraction_j = (
+                    np.count_nonzero(
+                        (min_distance_per_point_j <= cutoff_distance)
+                        & (abs_cos_theta_per_point_j >= cutoff_cos_theta)
+                    )
+                    / self.num_points
                 )
 
                 if fraction_i >= cutoff_fraction:
@@ -149,9 +138,54 @@ class Filaments:
                 if fraction_j >= cutoff_fraction:
                     self.are_bundled[j, i] = 1
 
+    def calculate_bundle_properties(
+        self, cutoff_distance=20, cutoff_angle=45, cutoff_fraction=0.25
+    ):
+        self.calculate_bundles(cutoff_distance, cutoff_angle, cutoff_fraction)
+        self.bundles = []
+        num_bundled = self.are_bundled.sum(axis=1)
+        unique_num_bundled = np.unique(num_bundled)
+        for current_num_bundled in unique_num_bundled:
+            indices = np.argwhere(num_bundled == current_num_bundled).flatten()
+            bundle_filament_list = [self.filament_list[i] for i in indices]
+            self.bundles.append(Bundle(bundle_filament_list, current_num_bundled))
+
+
+class Bundle:
+    def __init__(self, filament_list, num_bundled):
+        self.filament_list = filament_list
+        self.num_bundled = int(num_bundled)
+        self.calculate_properties()
+
+    def calculate_properties(self):
+        self.bin_to_cos_theta_dict = {}
+        self.bin_to_R_squared_dict = {}
+        self.bin_to_delta_squared_dict = {}
+        for current_filament in self.filament_list:
+            for key, value in current_filament.bin_to_cos_theta_dict.items():
+                add_to_dict(self.bin_to_cos_theta_dict, key, value)
+            for key, value in current_filament.bin_to_R_squared_dict.items():
+                add_to_dict(self.bin_to_R_squared_dict, key, value)
+            for key, value in current_filament.bin_to_delta_squared_dict.items():
+                add_to_dict(self.bin_to_delta_squared_dict, key, value)
+
+        for key, value in self.bin_to_cos_theta_dict.items():
+            self.bin_to_cos_theta_dict[key] = np.mean(value)
+        for key, value in self.bin_to_R_squared_dict.items():
+            self.bin_to_R_squared_dict[key] = np.mean(value)
+        for key, value in self.bin_to_delta_squared_dict.items():
+            self.bin_to_delta_squared_dict[key] = np.mean(value)
+
+        self.bin_to_cos_theta_dict = dict(sorted(self.bin_to_cos_theta_dict.items()))
+        self.bin_to_R_squared_dict = dict(sorted(self.bin_to_R_squared_dict.items()))
+        self.bin_to_delta_squared_dict = dict(
+            sorted(self.bin_to_delta_squared_dict.items())
+        )
+
 
 class Filament:
-    def __init__(self, id, node_dic, edge_list, bin_size):
+    def __init__(self, id, node_dic, edge_list, bin_size, splint_fraction=0.01):
+        self.splint_fraction = splint_fraction
         self.id = id
         self.bin_size = bin_size
         self.get_coords_tangents_and_tck(node_dic, edge_list)
@@ -181,7 +215,7 @@ class Filament:
             k = len(x) - 1
         self.tck, _ = splprep([x, y, z], k=k, s=0)
 
-        unew = np.arange(0, 1.00, 0.01)
+        unew = np.arange(0, 1.00 + self.splint_fraction, self.splint_fraction)
         new_x, new_y, new_z = splev(unew, self.tck)
         d_x, d_y, d_z = splev(unew, self.tck, der=1)
         tangents = np.column_stack((d_x, d_y, d_z))
