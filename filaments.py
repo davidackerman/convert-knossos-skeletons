@@ -152,12 +152,27 @@ class Filaments:
 
 
 class Bundle:
-    def __init__(self, filament_list, num_bundled):
+    def __init__(self, filament_list, num_bundled, bin_size=50):
         self.filament_list = filament_list
         self.num_bundled = int(num_bundled)
         self.calculate_properties()
+        self.fit_curves()
 
     def calculate_properties(self):
+        # self.cos_theta = []
+        # self.R_squared = []
+        # self.delta_squared = []
+        # for current_filament in self.filament_list:
+        #     self.cos_theta.append(current_filament.cos_theta)
+        #     self.R_squared.append(current_filament.R_squared)
+        #     self.delta_squared.append(current_filament.delta_squared)
+
+        # self.cos_theta = np.vstack(self.cos_theta)
+        # self.R_squared = np.vstack(self.R_squared)
+        # self.delta_squared = np.vstack(self.delta_squared)
+
+        # np.histogram(self.cos_theta,np)
+
         self.bin_to_cos_theta_dict = {}
         self.bin_to_R_squared_dict = {}
         self.bin_to_delta_squared_dict = {}
@@ -180,6 +195,17 @@ class Bundle:
         self.bin_to_R_squared_dict = dict(sorted(self.bin_to_R_squared_dict.items()))
         self.bin_to_delta_squared_dict = dict(
             sorted(self.bin_to_delta_squared_dict.items())
+        )
+
+    def fit_curves(self, stop_nm=500, start_nm=0):
+        self.P_cos_theta = fit_func(
+            cos_theta_equation, self.bin_to_cos_theta_dict, stop_nm, start_nm
+        )
+        self.P_R_squared = fit_func(
+            R_squared_equation, self.bin_to_R_squared_dict, stop_nm, start_nm
+        )
+        self.P_delta_squared = fit_func(
+            delta_squared_equation, self.bin_to_delta_squared_dict, stop_nm, start_nm
         )
 
 
@@ -215,9 +241,9 @@ class Filament:
             k = len(x) - 1
         self.tck, _ = splprep([x, y, z], k=k, s=0)
 
-        unew = np.arange(0, 1.00 + self.splint_fraction, self.splint_fraction)
-        new_x, new_y, new_z = splev(unew, self.tck)
-        d_x, d_y, d_z = splev(unew, self.tck, der=1)
+        self.unew = np.arange(0, 1.00 + self.splint_fraction, self.splint_fraction)
+        new_x, new_y, new_z = splev(self.unew, self.tck)
+        d_x, d_y, d_z = splev(self.unew, self.tck, der=1)
         tangents = np.column_stack((d_x, d_y, d_z))
 
         self.coords = np.column_stack((new_x, new_y, new_z))
@@ -261,14 +287,16 @@ class Filament:
 
         self.bin_to_delta_squared_dict = {}
         knots = np.unique(self.tck[0])
+        # knots = self.unew
+        knot_points = np.array(splev(knots, self.tck))
         self.delta_squared = np.zeros((np.sum(range(len(knots))), 2))
         count = 0
         for i in range(len(knots)):
             for j in range(i + 1, len(knots)):
                 # secant midpoint
-                points = np.array(splev([knots[i], knots[j]], self.tck))
-                L = np.linalg.norm(points[1, :] - points[0, :])
-                point = np.array(splev([knots[i], knots[j]], self.tck)).mean(axis=1)
+                points = knot_points[:, [i, j]]
+                L = np.linalg.norm(points[:, 0] - points[:, 1])
+                point = np.array(points).mean(axis=1)
                 u_guess = (knots[i] + knots[j]) / 2
                 res = fmin(
                     distance_to_spline,
