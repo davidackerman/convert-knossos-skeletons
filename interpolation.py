@@ -47,6 +47,7 @@ def interpolate_on_grid(z0, y0, x0, z1, y1, x1, voxel_size):
 # from /nrs/funke/ecksteinn/nils_data/cosem_data/cosem_runs/full_cell/cosem_hela_2_full/00_data/exports/read_nml.py
 from xml.dom import minidom
 import numpy as np
+import networkx as nx
 
 
 def parse_nml(filename, edge_attribute=None):
@@ -72,8 +73,19 @@ def parse_nml(filename, edge_attribute=None):
             edge_list.append((source_id, target_id))
             current_edge_list.append((source_id, target_id))
 
+        nodes, counts = np.unique(edge_list, return_counts=True)
+
+        G = nx.Graph(current_edge_list)
+
+        endnodes = [node for node, degree in G.degree() if degree == 1]
+        sorted_nodes = nx.shortest_path(G, endnodes[0], endnodes[1])
+
+        sorted_edge_list = []
+        for i in range(len(sorted_nodes) - 1):
+            sorted_edge_list.append((sorted_nodes[i], sorted_nodes[i + 1]))
+
         annotation_id = parse_attributes(annotation, [["id", int]])[0]
-        annotation_edge_dict[annotation_id] = current_edge_list
+        annotation_edge_dict[annotation_id] = sorted_edge_list
 
     return node_dic, edge_list, annotation_edge_dict
 
