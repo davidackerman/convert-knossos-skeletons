@@ -17,15 +17,22 @@ def add_to_dict(key_value_dict, key, value):
 
 
 class Filaments:
-    def __init__(self, bin_size, splint_fraction=0.01):
+    def __init__(self, bin_size, voxel_size, splint_fraction=0.01):
         self.splint_fraction = splint_fraction
         self.num_points = 1 / splint_fraction + 1
         self.bin_size = bin_size
+        self.voxel_size = voxel_size
         self.filament_list: List[Filament] = list()
 
-    def add_filament(self, id, node_dic, edge_list):
+    def add_filament(self, id, coordinate_info):
         self.filament_list.append(
-            Filament(id, node_dic, edge_list, self.bin_size, self.splint_fraction)
+            Filament(
+                id,
+                coordinate_info,
+                self.bin_size,
+                self.voxel_size,
+                self.splint_fraction,
+            )
         )
 
     def combine_filaments_info(self, indices="all"):
@@ -143,18 +150,18 @@ class Filaments:
     ):
         self.calculate_bundles(cutoff_distance, cutoff_angle, cutoff_fraction)
         self.bundles = []
-        num_bundled = self.are_bundled.sum(axis=1)
-        unique_num_bundled = np.unique(num_bundled)
-        for current_num_bundled in unique_num_bundled:
-            indices = np.argwhere(num_bundled == current_num_bundled).flatten()
+        num_touching = self.are_bundled.sum(axis=1)
+        unique_num_touching = np.unique(num_touching)
+        for current_num_bundled in unique_num_touching:
+            indices = np.argwhere(num_touching == current_num_bundled).flatten()
             bundle_filament_list = [self.filament_list[i] for i in indices]
             self.bundles.append(Bundle(bundle_filament_list, current_num_bundled))
 
 
 class Bundle:
-    def __init__(self, filament_list, num_bundled, bin_size=50):
+    def __init__(self, filament_list, num_touching, bin_size=50):
         self.filament_list = filament_list
-        self.num_bundled = int(num_bundled)
+        self.num_touching = int(num_touching)
         self.calculate_properties()
         self.fit_curves()
 
@@ -210,11 +217,28 @@ class Bundle:
 
 
 class Filament:
-    def __init__(self, id, node_dic, edge_list, bin_size, splint_fraction=0.01):
+    def __init__(
+        self,
+        id,
+        coordinate_info,
+        bin_size,
+        voxel_size,
+        splint_fraction=0.01,
+    ):
+        self.voxel_size = voxel_size
         self.splint_fraction = splint_fraction
         self.id = id
         self.bin_size = bin_size
-        self.get_coords_tangents_and_tck(node_dic, edge_list)
+
+        # get original coordinates
+        if type(coordinate_info) is np.ndarray:
+            self.original_coords = coordinate_info
+        else:
+            node_dic = coordinate_info[0]
+            edge_list = coordinate_info[1]
+            self.original_coords = self.node_edges_to_xyz(node_dic, edge_list)
+
+        self.get_tangents_and_tck()
         self.get_lengths()
         self.get_cos_theta()
         self.get_R_squared()
@@ -230,16 +254,15 @@ class Filament:
         g = nx.from_edgelist(edge_list)
         xyz = []
         for node in g.nodes():
-            xyz.append(node_dic[node] * 2)  # voxel-size = 2
-        xyz = np.array(xyz)
-        return xyz[:, 0], xyz[:, 1], xyz[:, 2]
+            xyz.append(node_dic[node] * self.voxel_size)  # voxel-size = 2
+        return np.array(xyz)
 
-    def get_coords_tangents_and_tck(self, node_dic, edge_list):
-        x, y, z = self.node_edges_to_xyz(node_dic, edge_list)
+    def get_tangents_and_tck(self):
         k = 3  # default is k=3, but this gave things that shot off to 1E6 sometimes
-        if len(x) <= 3:
-            k = len(x) - 1
-        self.tck, _ = splprep([x, y, z], k=k, s=0)
+        num_points = self.original_coords.shape[0]
+        if num_points <= 3:
+            k = num_points - 1
+        self.tck, _ = splprep(self.original_coords.T, k=k, s=0)
 
         self.unew = np.arange(0, 1.00 + self.splint_fraction, self.splint_fraction)
         new_x, new_y, new_z = splev(self.unew, self.tck)
@@ -311,3 +334,27 @@ class Filament:
                 self.delta_squared[count, :] = [L, delta_squared]
                 add_to_dict(self.bin_to_delta_squared_dict, bin, delta_squared)
                 count += 1
+
+    def fit_curves(self, stop_nm=500, start_nm=0):
+        self.bin_to_avg_cos_theta_dict = {}
+        self.bin_to_avg_R_squared_dict = {}
+        self.bin_to_avg_delta_squared_dict = {}
+        for key, value in self.bin_to_cos_theta_dict.items():
+            self.bin_to_avg_cos_theta_dict[key] = np.mean(value)
+        for key, value in self.bin_to_R_squared_dict.items():
+            self.bin_to_avg_R_squared_dict[key] = np.mean(value)
+        for key, value in self.bin_to_delta_squared_dict.items():
+            self.bin_to_avg_delta_squared_dict[key] = np.mean(value)
+
+        self.P_cos_theta = fit_func(
+            cos_theta_equation, self.bin_to_avg_cos_theta_dict, stop_nm, start_nm
+        )
+        self.P_R_squared = fit_func(
+            R_squared_equation, self.bin_to_avg_R_squared_dict, stop_nm, start_nm
+        )
+        self.P_delta_squared = fit_func(
+            delta_squared_equation,
+            self.bin_to_avg_delta_squared_dict,
+            stop_nm,
+            start_nm,
+        )
